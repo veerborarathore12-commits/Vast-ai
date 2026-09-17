@@ -38,6 +38,7 @@ const upload = multer({
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
+const DAILY_IMAGE_LIMIT = 3;
 
 app.use(express.json());
 
@@ -175,6 +176,55 @@ app.post("/api/auth/logout", (req, res) => {
   sessions.delete(getCookie(req, "nova_session"));
   res.setHeader("Set-Cookie", "nova_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
   res.status(204).end();
+});
+
+app.post("/api/images", async (req, res) => {
+  try {
+    const users = await readUsers();
+    const user = users.find(candidate => candidate.id === userIdFromRequest(req));
+    if (!user) return res.status(401).json({ error: "Please sign in to generate an image." });
+    if (!process.env.POLLINATIONS_API_KEY) {
+      return res.status(503).json({ error: "Image generation is not set up yet. Add POLLINATIONS_API_KEY in Render Environment Variables." });
+    }
+
+    const prompt = String(req.body.prompt || "").trim();
+    if (!prompt) return res.status(400).json({ error: "Describe the image you want Vast to create." });
+    if (prompt.length > 1_000) return res.status(400).json({ error: "Keep the image description under 1,000 characters." });
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    user.imageGenerations = (user.imageGenerations || []).filter(time => Number(time) >= todayStart.getTime());
+    if (user.imageGenerations.length >= DAILY_IMAGE_LIMIT) {
+      return res.status(429).json({ error: "You have used today's 3 free image generations. Please come back tomorrow." });
+    }
+
+    const response = await fetch("https://gen.pollinations.ai/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt,
+        model: "black-forest-labs/flux.1-schnell",
+        size: "1024x1024",
+        response_format: "url",
+        safe: true,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.data?.[0]?.url) {
+      console.error("Pollinations image request failed", response.status, data);
+      return res.status(502).json({ error: "Image generation is temporarily unavailable. Please try again in a moment." });
+    }
+
+    user.imageGenerations.push(Date.now());
+    await writeUsers(users);
+    res.json({ imageUrl: data.data[0].url, remaining: DAILY_IMAGE_LIMIT - user.imageGenerations.length });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Vast could not generate that image. Please try again." });
+  }
 });
 
 app.get("/api/conversations", async (req, res) => {
