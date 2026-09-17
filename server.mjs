@@ -218,12 +218,46 @@ app.post("/api/images", async (req, res) => {
       return res.status(502).json({ error: "Image generation is temporarily unavailable. Please try again in a moment." });
     }
 
-    user.imageGenerations.push(Date.now());
+    const createdAt = Date.now();
+    user.imageGenerations.push(createdAt);
+    user.generatedImages = [{
+      id: crypto.randomUUID(),
+      prompt,
+      imageUrl: data.data[0].url,
+      createdAt,
+    }, ...(user.generatedImages || [])].slice(0, 30);
     await writeUsers(users);
     res.json({ imageUrl: data.data[0].url, remaining: DAILY_IMAGE_LIMIT - user.imageGenerations.length });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Vast could not generate that image. Please try again." });
+  }
+});
+
+app.get("/api/images", async (req, res) => {
+  const user = (await readUsers()).find(candidate => candidate.id === userIdFromRequest(req));
+  if (!user) return res.status(401).json({ error: "Please sign in." });
+  res.json({ images: (user.generatedImages || []).slice(0, 30) });
+});
+
+app.get("/api/images/download", async (req, res) => {
+  try {
+    if (!userIdFromRequest(req)) return res.status(401).json({ error: "Please sign in." });
+    const imageUrl = new URL(String(req.query.url || ""));
+    if (!["media.pollinations.ai", "image.pollinations.ai"].includes(imageUrl.hostname)) {
+      return res.status(400).json({ error: "That image cannot be downloaded through Vast." });
+    }
+    const imageResponse = await fetch(imageUrl);
+    const contentType = imageResponse.headers.get("content-type") || "";
+    if (!imageResponse.ok || !contentType.startsWith("image/")) {
+      return res.status(502).json({ error: "The generated image is no longer available." });
+    }
+    const image = Buffer.from(await imageResponse.arrayBuffer());
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", 'attachment; filename="vast-image.png"');
+    res.send(image);
+  } catch (_) {
+    res.status(400).json({ error: "That image cannot be downloaded through Vast." });
   }
 });
 

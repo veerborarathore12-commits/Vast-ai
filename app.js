@@ -27,6 +27,7 @@ const libraryNav = document.querySelector('#libraryNav');
 const chatView = document.querySelector('#chatView');
 const libraryView = document.querySelector('#libraryView');
 const libraryGrid = document.querySelector('#libraryGrid');
+const imageHistoryGrid = document.querySelector('#imageHistoryGrid');
 const libraryFileInput = document.querySelector('#libraryFileInput');
 const notesNav = document.querySelector('#notesNav');
 const exploreNav = document.querySelector('#exploreNav');
@@ -199,6 +200,40 @@ async function loadLibrary() {
   const response = await fetch('/api/library');
   if (!response.ok) return;
   renderLibrary((await response.json()).files);
+  loadImageHistory();
+}
+
+async function loadImageHistory() {
+  const response = await fetch('/api/images');
+  if (!response.ok) return;
+  renderImageHistory((await response.json()).images);
+}
+
+function downloadUrl(imageUrl) {
+  return `/api/images/download?url=${encodeURIComponent(imageUrl)}`;
+}
+
+function renderImageHistory(images) {
+  imageHistoryGrid.innerHTML = '';
+  if (!images.length) {
+    imageHistoryGrid.innerHTML = '<p class="image-history-empty">Your generated images will appear here.</p>';
+    return;
+  }
+  images.forEach(item => {
+    const card = document.createElement('article');
+    card.className = 'image-history-card';
+    const image = document.createElement('img');
+    image.src = item.imageUrl;
+    image.alt = item.prompt;
+    const promptText = document.createElement('p');
+    promptText.textContent = item.prompt;
+    const download = document.createElement('a');
+    download.className = 'image-download';
+    download.href = downloadUrl(item.imageUrl);
+    download.textContent = 'Download';
+    card.append(image, promptText, download);
+    imageHistoryGrid.append(card);
+  });
 }
 
 function showLibrary() {
@@ -456,10 +491,8 @@ function addGeneratedImage(imageUrl, remaining) {
   image.src = imageUrl;
   image.alt = 'AI-generated image';
   const download = document.createElement('a');
-  download.href = imageUrl;
-  download.target = '_blank';
-  download.rel = 'noopener';
-  download.textContent = 'Open image ↗';
+  download.href = downloadUrl(imageUrl);
+  download.textContent = 'Download image';
   result.append(label, image, download);
   conversation.append(result);
   conversation.scrollTop = conversation.scrollHeight;
