@@ -8,6 +8,7 @@ import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { DatabaseSync } from "node:sqlite";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
@@ -29,7 +30,6 @@ database.exec(`
   );
   CREATE INDEX IF NOT EXISTS users_username_index ON users(username);
 `);
-const sessions = new Map();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 },
@@ -39,10 +39,18 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 const DAILY_IMAGE_LIMIT = 3;
+const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+  : null;
 
 app.use(express.json());
 
 async function readUsers() {
+  if (supabase) {
+    const { data, error } = await supabase.from("vast_state").select("users").eq("id", "main").maybeSingle();
+    if (error) throw error;
+    return Array.isArray(data?.users) ? data.users : [];
+  }
   const rows = database.prepare("SELECT * FROM users ORDER BY created_at ASC").all();
   return rows.map(row => ({
     id: row.id,
@@ -54,6 +62,15 @@ async function readUsers() {
 }
 
 async function writeUsers(users) {
+  if (supabase) {
+    const { error } = await supabase.from("vast_state").upsert({
+      id: "main",
+      users,
+      updated_at: new Date().toISOString(),
+    });
+    if (error) throw error;
+    return;
+  }
   const existingIds = new Set(database.prepare("SELECT id FROM users").all().map(row => row.id));
   const upsert = database.prepare(`
     INSERT INTO users (id, username, salt, password_hash, profile_json, created_at)
@@ -123,16 +140,29 @@ function getCookie(request, name) {
   return pairs.find(([key]) => key === name)?.[1];
 }
 
+function sessionSignature(payload) {
+  const secret = process.env.SESSION_SECRET || process.env.GROQ_API_KEY || "vast-local-development-secret";
+  return crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
 function setSession(response, userId) {
-  const id = crypto.randomBytes(32).toString("hex");
-  sessions.set(id, { userId, expires: Date.now() + 7 * 24 * 60 * 60 * 1000 });
-  response.setHeader("Set-Cookie", `nova_session=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+  const payload = Buffer.from(JSON.stringify({ userId, expires: Date.now() + 7 * 24 * 60 * 60 * 1000 })).toString("base64url");
+  response.setHeader("Set-Cookie", `vast_session=${payload}.${sessionSignature(payload)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 }
 
 function userIdFromRequest(request) {
-  const session = sessions.get(getCookie(request, "nova_session"));
-  if (!session || session.expires < Date.now()) return null;
-  return session.userId;
+  const token = getCookie(request, "vast_session");
+  if (!token) return null;
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+  const expected = sessionSignature(payload);
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  try {
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return session.expires > Date.now() && typeof session.userId === "string" ? session.userId : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 app.post("/api/auth/signup", async (req, res) => {
@@ -173,8 +203,7 @@ app.get("/api/auth/me", async (req, res) => {
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  sessions.delete(getCookie(req, "nova_session"));
-  res.setHeader("Set-Cookie", "nova_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+  res.setHeader("Set-Cookie", "vast_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
   res.status(204).end();
 });
 
