@@ -321,7 +321,16 @@ app.post("/api/chat", upload.single("file"), async (req, res) => {
     const memory = activeConversation.messages.slice(-12);
 
     if (attachment?.mimetype.startsWith("image/")) {
-      model = "qwen/qwen3.6-27b";
+      const supportedImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+      if (!supportedImageTypes.has(attachment.mimetype)) {
+        throw new Error("Vast can analyze JPG, PNG, and WebP images. Please convert this photo to JPG or PNG, then try again.");
+      }
+      // Image data is base64 encoded before being sent to Groq, so leave room below
+      // Groq's request-size limit for the encoded payload.
+      if (attachment.size > 10 * 1024 * 1024) {
+        throw new Error("This image is too large. Please choose an image smaller than 10 MB.");
+      }
+      model = "qwen/qwen3.8-27b";
       messages = [
         systemMessage, ...memory,
         {
