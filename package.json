@@ -1,0 +1,22 @@
+{
+  "name": "he",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --check app.js && node --check server.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "groq-sdk": "^1.6.0",
+    "mammoth": "^1.12.3",
+    "multer": "^2.4.0",
+    "pdf-parse": "^2.4.5"
+  }
+}
