@@ -361,6 +361,7 @@ fileInput.addEventListener('change', () => {
 });
 
 function speak(text) {
+  if (!('speechSynthesis' in window)) return;
   window.speechSynthesis.cancel();
 
   const speech = new SpeechSynthesisUtterance(text);
@@ -416,9 +417,12 @@ function addMessage(text, role) {
   if (welcome) welcome.remove();
   const message = document.createElement('div');
   message.className = `message ${role}`;
-  if (role === 'ai') message.innerHTML = renderMarkdown(text);
-  else message.textContent = text;
+  if (role === 'ai') {
+    message.innerHTML = `${renderMarkdown(text)}<button class="message-speak" type="button" aria-label="Read this response aloud" title="Read aloud"><i data-lucide="volume-2"></i> Listen</button>`;
+    message.querySelector('.message-speak').addEventListener('click', () => speak(text));
+  } else message.textContent = text;
   conversation.append(message);
+  if (role === 'ai') lucide.createIcons();
   conversation.scrollTop = conversation.scrollHeight;
 }
 
