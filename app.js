@@ -6,6 +6,8 @@ const conversation = document.querySelector('#conversation');
 const welcome = document.querySelector('#welcome');
 const mic = document.querySelector('#mic');
 const history = document.querySelector('#history');
+const historyPanel = document.querySelector('.history-panel');
+const historyToggle = document.querySelector('#historyToggle');
 const fileInput = document.querySelector('#fileInput');
 const fileStatus = document.querySelector('#fileStatus');
 const authScreen = document.querySelector('#authScreen');
@@ -54,6 +56,11 @@ const noteStatus = document.querySelector('#noteStatus');
 let voiceInputPending = false;
 let selectedFile = null;
 let creatingAccount = false;
+
+historyToggle.addEventListener('click', () => {
+  const isOpen = historyPanel.classList.toggle('mobile-open');
+  historyToggle.setAttribute('aria-label', isOpen ? 'Close chat history' : 'Open chat history');
+});
 let activeConversationId = null;
 let activeNoteId = null;
 
@@ -272,6 +279,7 @@ async function loadConversation(id) {
   if (!response.ok) return;
   const data = await response.json();
   activeConversationId = data.conversation.id;
+  historyPanel.classList.remove('mobile-open');
   conversation.innerHTML = '';
   data.conversation.messages.forEach(message => addMessage(message.content, message.role === 'assistant' ? 'ai' : 'user'));
   await loadConversations();
