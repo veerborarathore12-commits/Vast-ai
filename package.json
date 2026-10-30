@@ -15,7 +15,6 @@
     "@supabase/supabase-js": "^2.116.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "groq-sdk": "^1.6.0",
     "mammoth": "^1.12.3",
     "multer": "^2.4.0",
     "pdf-parse": "^2.4.5"

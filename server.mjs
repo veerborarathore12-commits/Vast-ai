@@ -1,5 +1,4 @@
 import express from "express";
-import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import multer from "multer";
 import mammoth from "mammoth";
@@ -35,9 +34,6 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024 },
 });
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
 const DAILY_IMAGE_LIMIT = 3;
 const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
@@ -141,7 +137,7 @@ function getCookie(request, name) {
 }
 
 function sessionSignature(payload) {
-  const secret = process.env.SESSION_SECRET || process.env.GROQ_API_KEY || "vast-local-development-secret";
+  const secret = process.env.SESSION_SECRET || process.env.GEMINI_API_KEY || "vast-local-development-secret";
   return crypto.createHmac("sha256", secret).update(payload).digest("base64url");
 }
 
@@ -407,6 +403,9 @@ async function readAttachment(file) {
 
 app.post("/api/chat", upload.single("file"), async (req, res) => {
   try {
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({ error: "Vast is not connected to Gemini yet. Add GEMINI_API_KEY in Render Environment Variables." });
+    }
     const users = await readUsers();
     const user = users.find(candidate => candidate.id === userIdFromRequest(req));
     if (!user) return res.status(401).json({ error: "Please sign in to chat with Vast." });
@@ -424,60 +423,51 @@ app.post("/api/chat", upload.single("file"), async (req, res) => {
       preferences.style = String(submittedPreferences.style || preferences.style).slice(0, 80);
     } catch (_) { /* Keep safe defaults for malformed browser input. */ }
     const attachment = req.file;
-    let model = "openai/gpt-oss-20b";
-    let messages;
-
-    const systemMessage = {
-      role: "system",
-      content: `You are ${preferences.name}, a friendly and helpful AI assistant. You are speaking with ${user.username}. Reply in a ${preferences.style} style. Format answers in clean Markdown: use short headings and bullet or numbered lists when useful; keep paragraphs short. Never use decorative separator lines, repeated symbols, or overly poetic language unless the user asks for it. For simple factual questions, give a concise direct answer first. Answer questions using the supplied attachment when one is provided.`,
-    };
+    const systemInstruction = `You are ${preferences.name}, a friendly and helpful AI assistant. You are speaking with ${user.username}. Reply in a ${preferences.style} style. Format answers in clean Markdown: use short headings and bullet or numbered lists when useful; keep paragraphs short. Never use decorative separator lines, repeated symbols, or overly poetic language unless the user asks for it. For simple factual questions, give a concise direct answer first. Answer questions using the supplied attachment when one is provided.`;
     const memory = activeConversation.messages.slice(-12);
+    const contents = memory.map(message => ({
+      role: message.role === "assistant" ? "model" : "user",
+      parts: [{ text: String(message.content || "") }],
+    }));
 
     if (attachment?.mimetype.startsWith("image/")) {
       const supportedImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
       if (!supportedImageTypes.has(attachment.mimetype)) {
         throw new Error("Vast can analyze JPG, PNG, and WebP images. Please convert this photo to JPG or PNG, then try again.");
       }
-      // Image data is base64 encoded before being sent to Groq, so leave room below
-      // Groq's request-size limit for the encoded payload.
       if (attachment.size > 10 * 1024 * 1024) {
         throw new Error("This image is too large. Please choose an image smaller than 10 MB.");
       }
-      model = "qwen/qwen3.8-27b";
-      messages = [
-        systemMessage, ...memory,
-        {
-          role: "user",
-          content: [
-            { type: "text", text: userMessage },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:${attachment.mimetype};base64,${attachment.buffer.toString("base64")}`,
-              },
-            },
-          ],
-        },
-      ];
+      contents.push({
+        role: "user",
+        parts: [
+          { text: userMessage },
+          { inlineData: { mimeType: attachment.mimetype, data: attachment.buffer.toString("base64") } },
+        ],
+      });
     } else if (attachment) {
       const fileText = await readAttachment(attachment);
-      messages = [
-        systemMessage, ...memory,
-        {
-          role: "user",
-          content: `Attached file: ${attachment.originalname}\n\n${fileText.slice(0, 100000)}\n\nUser question: ${userMessage}`,
-        },
-      ];
+      contents.push({ role: "user", parts: [{ text: `Attached file: ${attachment.originalname}\n\n${fileText.slice(0, 100000)}\n\nUser question: ${userMessage}` }] });
     } else {
-      messages = [systemMessage, ...memory, { role: "user", content: userMessage }];
+      contents.push({ role: "user", parts: [{ text: userMessage }] });
     }
 
-    const completion = await groq.chat.completions.create({
-      model,
-      messages,
+    const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    const completion = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        contents,
+      }),
     });
+    const completionData = await completion.json().catch(() => ({}));
+    if (!completion.ok) {
+      console.error("Gemini request failed", completion.status, completionData);
+      throw new Error(completionData.error?.message || "Gemini could not answer right now. Please try again.");
+    }
 
-    const aiReply = completion.choices[0]?.message?.content;
+    const aiReply = completionData.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("").trim();
     activeConversation.messages.push({ role: "user", content: userMessage }, { role: "assistant", content: aiReply || "" });
     activeConversation.messages = activeConversation.messages.slice(-40);
     if (activeConversation.title === "New conversation") {

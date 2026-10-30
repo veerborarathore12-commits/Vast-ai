@@ -489,7 +489,7 @@ async function replyTo(text, shouldSpeak = false) {
     typing.remove();
 
     addMessage(
-      error.message || "I could not connect to Groq. Please check the server and API key, then try again.",
+      error.message || "I could not connect to Gemini. Please check the server and API key, then try again.",
       "ai"
     );
 
