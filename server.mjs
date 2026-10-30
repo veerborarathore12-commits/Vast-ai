@@ -424,7 +424,8 @@ app.post("/api/chat", upload.single("file"), async (req, res) => {
     } catch (_) { /* Keep safe defaults for malformed browser input. */ }
     const attachment = req.file;
     const systemInstruction = `You are ${preferences.name}, a friendly and helpful AI assistant. You are speaking with ${user.username}. Reply in a ${preferences.style} style. Format answers in clean Markdown: use short headings and bullet or numbered lists when useful; keep paragraphs short. Never use decorative separator lines, repeated symbols, or overly poetic language unless the user asks for it. For simple factual questions, give a concise direct answer first. Answer questions using the supplied attachment when one is provided.`;
-    const memory = activeConversation.messages.slice(-12);
+    // Keep recent context without re-sending a long conversation on every request.
+    const memory = activeConversation.messages.slice(-8);
     const contents = memory.map(message => ({
       role: message.role === "assistant" ? "model" : "user",
       parts: [{ text: String(message.content || "") }],
@@ -452,13 +453,14 @@ app.post("/api/chat", upload.single("file"), async (req, res) => {
       contents.push({ role: "user", parts: [{ text: userMessage }] });
     }
 
-    const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+    const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
     const completion = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemInstruction }] },
         contents,
+        generationConfig: { maxOutputTokens: 2048 },
       }),
     });
     const completionData = await completion.json().catch(() => ({}));
