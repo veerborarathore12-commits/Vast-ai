@@ -418,6 +418,43 @@ function speak(text) {
   window.speechSynthesis.speak(speech);
 }
 
+async function copyResponse(text, button) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const helper = document.createElement('textarea');
+      helper.value = text;
+      helper.style.position = 'fixed';
+      helper.style.opacity = '0';
+      document.body.append(helper);
+      helper.select();
+      document.execCommand('copy');
+      helper.remove();
+    }
+    const original = button.innerHTML;
+    button.innerHTML = '<i data-lucide="check"></i> Copied';
+    lucide.createIcons();
+    setTimeout(() => { button.innerHTML = original; lucide.createIcons(); }, 1600);
+  } catch (_) {
+    button.textContent = 'Copy failed';
+  }
+}
+
+async function shareResponse(text) {
+  const shareData = { title: `${getPreferences().name} response`, text };
+  if (navigator.share) {
+    try { await navigator.share(shareData); } catch (_) { /* User cancelled the share sheet. */ }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    alert('Response copied. You can now paste it anywhere to share it.');
+  } catch (_) {
+    alert('Sharing is not available in this browser.');
+  }
+}
+
 async function replyTo(text, shouldSpeak = false) {
   const typing = document.createElement("div");
   typing.className = "typing";
@@ -502,8 +539,10 @@ function addMessage(text, role) {
   const message = document.createElement('div');
   message.className = `message ${role}`;
   if (role === 'ai') {
-    message.innerHTML = `${renderMarkdown(text)}<button class="message-speak" type="button" aria-label="Read this response aloud" title="Read aloud"><i data-lucide="volume-2"></i> Listen</button>`;
+    message.innerHTML = `${renderMarkdown(text)}<div class="message-actions"><button class="message-speak" type="button" aria-label="Read this response aloud" title="Read aloud"><i data-lucide="volume-2"></i> Listen</button><button class="message-copy" type="button" aria-label="Copy this response" title="Copy response"><i data-lucide="copy"></i> Copy</button><button class="message-share" type="button" aria-label="Share this response" title="Share response"><i data-lucide="share-2"></i> Share</button></div>`;
     message.querySelector('.message-speak').addEventListener('click', () => speak(text));
+    message.querySelector('.message-copy').addEventListener('click', event => copyResponse(text, event.currentTarget));
+    message.querySelector('.message-share').addEventListener('click', () => shareResponse(text));
   } else message.textContent = text;
   conversation.append(message);
   if (role === 'ai') lucide.createIcons();
