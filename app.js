@@ -433,7 +433,7 @@ async function copyResponse(text, button) {
       helper.remove();
     }
     const original = button.innerHTML;
-    button.innerHTML = '<i data-lucide="check"></i> Copied';
+    button.innerHTML = '<i data-lucide="check"></i>';
     lucide.createIcons();
     setTimeout(() => { button.innerHTML = original; lucide.createIcons(); }, 1600);
   } catch (_) {
@@ -539,7 +539,7 @@ function addMessage(text, role) {
   const message = document.createElement('div');
   message.className = `message ${role}`;
   if (role === 'ai') {
-    message.innerHTML = `${renderMarkdown(text)}<div class="message-actions"><button class="message-speak" type="button" aria-label="Read this response aloud" title="Read aloud"><i data-lucide="volume-2"></i> Listen</button><button class="message-copy" type="button" aria-label="Copy this response" title="Copy response"><i data-lucide="copy"></i> Copy</button><button class="message-share" type="button" aria-label="Share this response" title="Share response"><i data-lucide="share-2"></i> Share</button></div>`;
+    message.innerHTML = `${renderMarkdown(text)}<div class="message-actions"><button class="message-speak" type="button" aria-label="Read this response aloud" title="Read aloud"><i data-lucide="volume-2"></i></button><button class="message-copy" type="button" aria-label="Copy this response" title="Copy response"><i data-lucide="copy"></i></button><button class="message-share" type="button" aria-label="Share this response" title="Share response"><i data-lucide="share-2"></i></button></div>`;
     message.querySelector('.message-speak').addEventListener('click', () => speak(text));
     message.querySelector('.message-copy').addEventListener('click', event => copyResponse(text, event.currentTarget));
     message.querySelector('.message-share').addEventListener('click', () => shareResponse(text));
