@@ -530,9 +530,38 @@ function addGeneratedImage(imageUrl, remaining) {
   const download = document.createElement('a');
   download.href = downloadUrl(imageUrl);
   download.textContent = 'Download image';
-  result.append(label, image, download);
+  const edit = document.createElement('button');
+  edit.className = 'image-edit';
+  edit.type = 'button';
+  edit.innerHTML = '<i data-lucide="wand-sparkles"></i> Edit image';
+  edit.addEventListener('click', () => editImage(imageUrl));
+  result.append(label, image, download, edit);
   conversation.append(result);
+  lucide.createIcons();
   conversation.scrollTop = conversation.scrollHeight;
+}
+
+async function editImage(imageUrl) {
+  const instruction = window.prompt('How should Vast edit this image?\nExample: Make the sky a warm sunset and keep everything else the same.');
+  if (!instruction?.trim()) return;
+  const typing = document.createElement('div');
+  typing.className = 'typing';
+  typing.textContent = 'Vast is editing your image…';
+  conversation.append(typing);
+  try {
+    const response = await fetch('/api/images/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl, prompt: instruction.trim() }),
+    });
+    const data = await response.json();
+    typing.remove();
+    if (!response.ok) throw new Error(data.error);
+    addGeneratedImage(data.imageUrl, data.remaining);
+  } catch (error) {
+    typing.remove();
+    addMessage(error.message || 'Vast could not edit that image.', 'ai');
+  }
 }
 function addMessage(text, role) {
   if (welcome) welcome.remove();
