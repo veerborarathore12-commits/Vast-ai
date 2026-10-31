@@ -294,7 +294,7 @@ app.post("/api/images", async (req, res) => {
     res.json({ imageId: image.id, imageUrl: imageUrlForClient(image), remaining: DAILY_IMAGE_LIMIT - user.imageGenerations.length });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Vast could not generate that image. Please try again." });
+    res.status(500).json({ error: error.message || "Vast could not generate that image. Please try again." });
   }
 });
 
@@ -340,7 +340,7 @@ app.post("/api/images/edit", async (req, res) => {
     res.json({ imageId: image.id, imageUrl: imageUrlForClient(image), remaining: DAILY_IMAGE_LIMIT - user.imageGenerations.length });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Vast could not edit that image. Please try again." });
+    res.status(500).json({ error: error.message || "Vast could not edit that image. Please try again." });
   }
 });
 
