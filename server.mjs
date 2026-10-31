@@ -46,28 +46,34 @@ function imageUrlForClient(image) {
   return image.imagePath ? `/api/images/file/${image.id}` : image.imageUrl;
 }
 
-async function createNanoBananaImage(input) {
-  const model = process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1";
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+function imageMimeType(buffer) {
+  if (buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
+  if (buffer.subarray(0, 3).equals(Buffer.from([255, 216, 255]))) return "image/jpeg";
+  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return "image/png";
+}
+
+async function createCloudflareImage(prompt, sourceImage) {
+  const model = process.env.CLOUDFLARE_IMAGE_MODEL || "@cf/black-forest-labs/flux-2-klein-4b";
+  const body = new FormData();
+  body.append("prompt", prompt);
+  body.append("width", "1024");
+  body.append("height", "1024");
+  if (sourceImage) body.append("input_image_0", new Blob([sourceImage.buffer], { type: sourceImage.mimeType }), "source-image.png");
+  const modelPath = model.split("/").map(encodeURIComponent).join("/");
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(process.env.CLOUDFLARE_ACCOUNT_ID)}/ai/run/${modelPath}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY },
-    body: JSON.stringify({
-      model,
-      input,
-      response_format: { type: "image", aspect_ratio: "1:1", image_size: "1K" },
-      generation_config: { thinking_level: "minimal" },
-    }),
+    headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_AI_TOKEN}` },
+    body,
   });
   const data = await response.json().catch(() => ({}));
-  const output = data.output_image || data.outputImage;
-  if (!response.ok || !output?.data) {
-    console.error("Gemini image request failed", response.status, data);
-    throw new Error(data.error?.message || "Nano Banana could not create that image right now. Please try again.");
+  const encodedImage = data.result?.image;
+  if (!response.ok || !data.success || !encodedImage) {
+    console.error("Cloudflare image request failed", response.status, data);
+    throw new Error(data.errors?.[0]?.message || "Cloudflare could not create that image right now. Please try again.");
   }
-  return {
-    buffer: Buffer.from(output.data, "base64"),
-    mimeType: output.mime_type || output.mimeType || "image/png",
-  };
+  const buffer = Buffer.from(encodedImage, "base64");
+  return { buffer, mimeType: imageMimeType(buffer) };
 }
 
 async function saveGeneratedImage(userId, image) {
@@ -263,8 +269,8 @@ app.post("/api/images", async (req, res) => {
     const users = await readUsers();
     const user = users.find(candidate => candidate.id === userIdFromRequest(req));
     if (!user) return res.status(401).json({ error: "Please sign in to generate an image." });
-    if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "Image generation is not set up yet. Add GEMINI_API_KEY in Render Environment Variables." });
-    if (!supabase) return res.status(503).json({ error: "Image history needs Supabase to be connected before Nano Banana can be used." });
+    if (!process.env.CLOUDFLARE_ACCOUNT_ID || !process.env.CLOUDFLARE_AI_TOKEN) return res.status(503).json({ error: "Image generation is not set up yet. Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AI_TOKEN in Render Environment Variables." });
+    if (!supabase) return res.status(503).json({ error: "Image history needs Supabase to be connected before Cloudflare image generation can be used." });
 
     const prompt = String(req.body.prompt || "").trim();
     if (!prompt) return res.status(400).json({ error: "Describe the image you want Vast to create." });
@@ -277,7 +283,7 @@ app.post("/api/images", async (req, res) => {
       return res.status(429).json({ error: "You have used today's 3 free image generations. Please come back tomorrow." });
     }
 
-    const generated = await createNanoBananaImage(prompt);
+    const generated = await createCloudflareImage(prompt);
     const saved = await saveGeneratedImage(user.id, generated);
 
     const createdAt = Date.now();
@@ -303,8 +309,8 @@ app.post("/api/images/edit", async (req, res) => {
     const users = await readUsers();
     const user = users.find(candidate => candidate.id === userIdFromRequest(req));
     if (!user) return res.status(401).json({ error: "Please sign in to edit an image." });
-    if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "Image generation is not set up yet. Add GEMINI_API_KEY in Render Environment Variables." });
-    if (!supabase) return res.status(503).json({ error: "Image history needs Supabase to be connected before Nano Banana can be used." });
+    if (!process.env.CLOUDFLARE_ACCOUNT_ID || !process.env.CLOUDFLARE_AI_TOKEN) return res.status(503).json({ error: "Image generation is not set up yet. Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AI_TOKEN in Render Environment Variables." });
+    if (!supabase) return res.status(503).json({ error: "Image history needs Supabase to be connected before Cloudflare image generation can be used." });
     const imageId = String(req.body.imageId || "");
     const prompt = String(req.body.prompt || "").trim();
     const sourceImage = (user.generatedImages || []).find(image => image.id === imageId);
@@ -320,10 +326,7 @@ app.post("/api/images/edit", async (req, res) => {
     }
 
     const source = await readGeneratedImage(sourceImage);
-    const generated = await createNanoBananaImage([
-      { type: "text", text: prompt },
-      { type: "image", mime_type: source.mimeType, data: source.buffer.toString("base64") },
-    ]);
+    const generated = await createCloudflareImage(prompt, source);
     const saved = await saveGeneratedImage(user.id, generated);
 
     const createdAt = Date.now();
