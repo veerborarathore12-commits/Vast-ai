@@ -59,6 +59,7 @@ let voiceInputPending = false;
 let selectedFile = null;
 let creatingAccount = false;
 let imageMode = false;
+let editingImageId = null;
 
 historyToggle.addEventListener('click', () => {
   const isOpen = historyPanel.classList.toggle('mobile-open');
@@ -209,8 +210,8 @@ async function loadImageHistory() {
   renderImageHistory((await response.json()).images);
 }
 
-function downloadUrl(imageUrl) {
-  return `/api/images/download?url=${encodeURIComponent(imageUrl)}`;
+function downloadUrl(imageId) {
+  return `/api/images/download?id=${encodeURIComponent(imageId)}`;
 }
 
 function renderImageHistory(images) {
@@ -229,9 +230,14 @@ function renderImageHistory(images) {
     promptText.textContent = item.prompt;
     const download = document.createElement('a');
     download.className = 'image-download';
-    download.href = downloadUrl(item.imageUrl);
+    download.href = downloadUrl(item.id);
     download.textContent = 'Download';
-    card.append(image, promptText, download);
+    const edit = document.createElement('button');
+    edit.className = 'image-edit';
+    edit.type = 'button';
+    edit.textContent = 'Edit';
+    edit.addEventListener('click', () => { showChat(); beginImageEdit(item.id); });
+    card.append(image, promptText, download, edit);
     imageHistoryGrid.append(card);
   });
 }
@@ -399,6 +405,7 @@ fileInput.addEventListener('change', () => {
 
 imageModeButton.addEventListener('click', () => {
   imageMode = !imageMode;
+  if (!imageMode) editingImageId = null;
   imageModeButton.classList.toggle('active', imageMode);
   imageModeButton.setAttribute('aria-pressed', String(imageMode));
   prompt.placeholder = imageMode ? 'Describe an image to create…' : `Message ${getPreferences().name}...`;
@@ -511,14 +518,14 @@ async function generateImage(text) {
     const data = await response.json();
     typing.remove();
     if (!response.ok) throw new Error(data.error);
-    addGeneratedImage(data.imageUrl, data.remaining);
+    addGeneratedImage(data.imageUrl, data.remaining, data.imageId);
   } catch (error) {
     typing.remove();
     addMessage(error.message || 'Vast could not generate that image.', 'ai');
   }
 }
 
-function addGeneratedImage(imageUrl, remaining) {
+function addGeneratedImage(imageUrl, remaining, imageId) {
   if (welcome) welcome.remove();
   const result = document.createElement('div');
   result.className = 'image-result';
@@ -528,22 +535,29 @@ function addGeneratedImage(imageUrl, remaining) {
   image.src = imageUrl;
   image.alt = 'AI-generated image';
   const download = document.createElement('a');
-  download.href = downloadUrl(imageUrl);
+  download.href = downloadUrl(imageId);
   download.textContent = 'Download image';
   const edit = document.createElement('button');
   edit.className = 'image-edit';
   edit.type = 'button';
   edit.innerHTML = '<i data-lucide="wand-sparkles"></i> Edit image';
-  edit.addEventListener('click', () => editImage(imageUrl));
+  edit.addEventListener('click', () => beginImageEdit(imageId));
   result.append(label, image, download, edit);
   conversation.append(result);
   lucide.createIcons();
   conversation.scrollTop = conversation.scrollHeight;
 }
 
-async function editImage(imageUrl) {
-  const instruction = window.prompt('How should Vast edit this image?\nExample: Make the sky a warm sunset and keep everything else the same.');
-  if (!instruction?.trim()) return;
+function beginImageEdit(imageId) {
+  editingImageId = imageId;
+  imageMode = true;
+  imageModeButton.classList.add('active');
+  imageModeButton.setAttribute('aria-pressed', 'true');
+  prompt.placeholder = 'Describe how Vast should edit this image…';
+  prompt.focus();
+}
+
+async function editImage(imageId, instruction) {
   const typing = document.createElement('div');
   typing.className = 'typing';
   typing.textContent = 'Vast is editing your image…';
@@ -552,12 +566,14 @@ async function editImage(imageUrl) {
     const response = await fetch('/api/images/edit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageUrl, prompt: instruction.trim() }),
+      body: JSON.stringify({ imageId, prompt: instruction }),
     });
     const data = await response.json();
     typing.remove();
     if (!response.ok) throw new Error(data.error);
-    addGeneratedImage(data.imageUrl, data.remaining);
+    addGeneratedImage(data.imageUrl, data.remaining, data.imageId);
+    editingImageId = null;
+    prompt.placeholder = 'Describe an image to create…';
   } catch (error) {
     typing.remove();
     addMessage(error.message || 'Vast could not edit that image.', 'ai');
@@ -621,8 +637,9 @@ function submitMessage(value = prompt.value) {
   if (!text) return;
   const shouldSpeak = voiceInputPending;
   voiceInputPending = false;
-  addMessage(imageMode ? `Create an image: ${text}` : text, 'user'); prompt.value = ''; prompt.style.height = 'auto';
-  if (imageMode) generateImage(text); else replyTo(text, shouldSpeak);
+  const isEditingImage = Boolean(editingImageId);
+  addMessage(isEditingImage ? `Edit image: ${text}` : imageMode ? `Create an image: ${text}` : text, 'user'); prompt.value = ''; prompt.style.height = 'auto';
+  if (isEditingImage) editImage(editingImageId, text); else if (imageMode) generateImage(text); else replyTo(text, shouldSpeak);
   selectedFile = null;
   fileInput.value = '';
   fileStatus.textContent = '';

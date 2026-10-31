@@ -35,11 +35,66 @@ const upload = multer({
 });
 
 const DAILY_IMAGE_LIMIT = 3;
+const IMAGE_BUCKET = "vast-images";
 const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
   : null;
 
 app.use(express.json());
+
+function imageUrlForClient(image) {
+  return image.imagePath ? `/api/images/file/${image.id}` : image.imageUrl;
+}
+
+async function createNanoBananaImage(input) {
+  const model = process.env.GEMINI_IMAGE_MODEL || "gemini-nano-banana-2.1";
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY },
+    body: JSON.stringify({
+      model,
+      input,
+      response_format: { type: "image", aspect_ratio: "1:1", image_size: "1K" },
+      generation_config: { thinking_level: "minimal" },
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  const output = data.output_image || data.outputImage;
+  if (!response.ok || !output?.data) {
+    console.error("Gemini image request failed", response.status, data);
+    throw new Error(data.error?.message || "Nano Banana could not create that image right now. Please try again.");
+  }
+  return {
+    buffer: Buffer.from(output.data, "base64"),
+    mimeType: output.mime_type || output.mimeType || "image/png",
+  };
+}
+
+async function saveGeneratedImage(userId, image) {
+  const id = crypto.randomUUID();
+  const extension = image.mimeType === "image/jpeg" ? "jpg" : image.mimeType === "image/webp" ? "webp" : "png";
+  const path = `${userId}/${id}.${extension}`;
+  const { error } = await supabase.storage.from(IMAGE_BUCKET).upload(path, image.buffer, {
+    contentType: image.mimeType,
+    upsert: false,
+  });
+  if (error) throw new Error("Vast could not save the image. Make sure the Supabase 'vast-images' storage bucket exists.");
+  return { id, path, mimeType: image.mimeType };
+}
+
+async function readGeneratedImage(image) {
+  if (image.imagePath && supabase) {
+    const { data, error } = await supabase.storage.from(IMAGE_BUCKET).download(image.imagePath);
+    if (error || !data) throw new Error("The generated image is no longer available.");
+    return { buffer: Buffer.from(await data.arrayBuffer()), mimeType: image.mimeType || data.type || "image/png" };
+  }
+  const oldUrl = new URL(image.imageUrl);
+  if (!["media.pollinations.ai", "image.pollinations.ai"].includes(oldUrl.hostname)) throw new Error("The generated image is no longer available.");
+  const response = await fetch(oldUrl);
+  const mimeType = response.headers.get("content-type") || "";
+  if (!response.ok || !mimeType.startsWith("image/")) throw new Error("The generated image is no longer available.");
+  return { buffer: Buffer.from(await response.arrayBuffer()), mimeType };
+}
 
 async function readUsers() {
   if (supabase) {
@@ -208,9 +263,8 @@ app.post("/api/images", async (req, res) => {
     const users = await readUsers();
     const user = users.find(candidate => candidate.id === userIdFromRequest(req));
     if (!user) return res.status(401).json({ error: "Please sign in to generate an image." });
-    if (!process.env.POLLINATIONS_API_KEY) {
-      return res.status(503).json({ error: "Image generation is not set up yet. Add POLLINATIONS_API_KEY in Render Environment Variables." });
-    }
+    if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "Image generation is not set up yet. Add GEMINI_API_KEY in Render Environment Variables." });
+    if (!supabase) return res.status(503).json({ error: "Image history needs Supabase to be connected before Nano Banana can be used." });
 
     const prompt = String(req.body.prompt || "").trim();
     if (!prompt) return res.status(400).json({ error: "Describe the image you want Vast to create." });
@@ -223,36 +277,21 @@ app.post("/api/images", async (req, res) => {
       return res.status(429).json({ error: "You have used today's 3 free image generations. Please come back tomorrow." });
     }
 
-    const response = await fetch("https://gen.pollinations.ai/v1/images/generations", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        prompt,
-        model: "black-forest-labs/flux.1-schnell",
-        size: "1024x1024",
-        response_format: "url",
-        safe: true,
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.data?.[0]?.url) {
-      console.error("Pollinations image request failed", response.status, data);
-      return res.status(502).json({ error: "Image generation is temporarily unavailable. Please try again in a moment." });
-    }
+    const generated = await createNanoBananaImage(prompt);
+    const saved = await saveGeneratedImage(user.id, generated);
 
     const createdAt = Date.now();
     user.imageGenerations.push(createdAt);
-    user.generatedImages = [{
-      id: crypto.randomUUID(),
+    const image = {
+      id: saved.id,
       prompt,
-      imageUrl: data.data[0].url,
+      imagePath: saved.path,
+      mimeType: saved.mimeType,
       createdAt,
-    }, ...(user.generatedImages || [])].slice(0, 30);
+    };
+    user.generatedImages = [image, ...(user.generatedImages || [])].slice(0, 30);
     await writeUsers(users);
-    res.json({ imageUrl: data.data[0].url, remaining: DAILY_IMAGE_LIMIT - user.imageGenerations.length });
+    res.json({ imageId: image.id, imageUrl: imageUrlForClient(image), remaining: DAILY_IMAGE_LIMIT - user.imageGenerations.length });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Vast could not generate that image. Please try again." });
@@ -264,13 +303,12 @@ app.post("/api/images/edit", async (req, res) => {
     const users = await readUsers();
     const user = users.find(candidate => candidate.id === userIdFromRequest(req));
     if (!user) return res.status(401).json({ error: "Please sign in to edit an image." });
-    if (!process.env.POLLINATIONS_API_KEY) {
-      return res.status(503).json({ error: "Image generation is not set up yet. Add POLLINATIONS_API_KEY in Render Environment Variables." });
-    }
-    const imageUrl = String(req.body.imageUrl || "");
+    if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "Image generation is not set up yet. Add GEMINI_API_KEY in Render Environment Variables." });
+    if (!supabase) return res.status(503).json({ error: "Image history needs Supabase to be connected before Nano Banana can be used." });
+    const imageId = String(req.body.imageId || "");
     const prompt = String(req.body.prompt || "").trim();
-    const isOwnedImage = (user.generatedImages || []).some(image => image.imageUrl === imageUrl);
-    if (!isOwnedImage) return res.status(400).json({ error: "Choose an image created by Vast to edit." });
+    const sourceImage = (user.generatedImages || []).find(image => image.id === imageId);
+    if (!sourceImage) return res.status(400).json({ error: "Choose an image created by Vast to edit." });
     if (!prompt) return res.status(400).json({ error: "Describe how you want to edit the image." });
     if (prompt.length > 1_000) return res.status(400).json({ error: "Keep the edit instruction under 1,000 characters." });
 
@@ -281,37 +319,25 @@ app.post("/api/images/edit", async (req, res) => {
       return res.status(429).json({ error: "You have used today's 3 free image generations. Please come back tomorrow." });
     }
 
-    const response = await fetch("https://gen.pollinations.ai/v1/images/edits", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        image: imageUrl,
-        prompt,
-        model: "kontext",
-        size: "1024x1024",
-        response_format: "url",
-        safe: true,
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.data?.[0]?.url) {
-      console.error("Pollinations image edit failed", response.status, data);
-      return res.status(502).json({ error: "Vast could not edit that image right now. Please try again." });
-    }
+    const source = await readGeneratedImage(sourceImage);
+    const generated = await createNanoBananaImage([
+      { type: "text", text: prompt },
+      { type: "image", mime_type: source.mimeType, data: source.buffer.toString("base64") },
+    ]);
+    const saved = await saveGeneratedImage(user.id, generated);
 
     const createdAt = Date.now();
     user.imageGenerations.push(createdAt);
-    user.generatedImages = [{
-      id: crypto.randomUUID(),
+    const image = {
+      id: saved.id,
       prompt: `Edit: ${prompt}`,
-      imageUrl: data.data[0].url,
+      imagePath: saved.path,
+      mimeType: saved.mimeType,
       createdAt,
-    }, ...(user.generatedImages || [])].slice(0, 30);
+    };
+    user.generatedImages = [image, ...(user.generatedImages || [])].slice(0, 30);
     await writeUsers(users);
-    res.json({ imageUrl: data.data[0].url, remaining: DAILY_IMAGE_LIMIT - user.imageGenerations.length });
+    res.json({ imageId: image.id, imageUrl: imageUrlForClient(image), remaining: DAILY_IMAGE_LIMIT - user.imageGenerations.length });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Vast could not edit that image. Please try again." });
@@ -321,25 +347,31 @@ app.post("/api/images/edit", async (req, res) => {
 app.get("/api/images", async (req, res) => {
   const user = (await readUsers()).find(candidate => candidate.id === userIdFromRequest(req));
   if (!user) return res.status(401).json({ error: "Please sign in." });
-  res.json({ images: (user.generatedImages || []).slice(0, 30) });
+  res.json({ images: (user.generatedImages || []).slice(0, 30).map(image => ({ ...image, imageUrl: imageUrlForClient(image) })) });
+});
+
+app.get("/api/images/file/:imageId", async (req, res) => {
+  try {
+    const user = (await readUsers()).find(candidate => candidate.id === userIdFromRequest(req));
+    const image = user && (user.generatedImages || []).find(item => item.id === req.params.imageId);
+    if (!image) return res.status(404).end();
+    const source = await readGeneratedImage(image);
+    res.setHeader("Content-Type", source.mimeType);
+    res.send(source.buffer);
+  } catch (_) {
+    res.status(404).end();
+  }
 });
 
 app.get("/api/images/download", async (req, res) => {
   try {
-    if (!userIdFromRequest(req)) return res.status(401).json({ error: "Please sign in." });
-    const imageUrl = new URL(String(req.query.url || ""));
-    if (!["media.pollinations.ai", "image.pollinations.ai"].includes(imageUrl.hostname)) {
-      return res.status(400).json({ error: "That image cannot be downloaded through Vast." });
-    }
-    const imageResponse = await fetch(imageUrl);
-    const contentType = imageResponse.headers.get("content-type") || "";
-    if (!imageResponse.ok || !contentType.startsWith("image/")) {
-      return res.status(502).json({ error: "The generated image is no longer available." });
-    }
-    const image = Buffer.from(await imageResponse.arrayBuffer());
-    res.setHeader("Content-Type", contentType);
+    const user = (await readUsers()).find(candidate => candidate.id === userIdFromRequest(req));
+    const image = user && (user.generatedImages || []).find(item => item.id === String(req.query.id || ""));
+    if (!image) return res.status(404).json({ error: "That image is no longer available." });
+    const source = await readGeneratedImage(image);
+    res.setHeader("Content-Type", source.mimeType);
     res.setHeader("Content-Disposition", 'attachment; filename="vast-image.png"');
-    res.send(image);
+    res.send(source.buffer);
   } catch (_) {
     res.status(400).json({ error: "That image cannot be downloaded through Vast." });
   }
